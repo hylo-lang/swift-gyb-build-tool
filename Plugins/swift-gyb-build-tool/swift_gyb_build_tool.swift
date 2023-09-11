@@ -1,49 +1,32 @@
 import PackagePlugin
 
+/// Maps the output filename's extension onto the line directive format to use.
+let lineDirectiveForOutputExtension: [ Substring: String] = [
+  ".swift": #"#sourceLocation(file: "%(file)s", line: %(line)d)"#,
+  ".hylo": #"// #sourceLocation(file: "%(file)s", line: %(line)d)"#,
+]
+
 @main
 struct GybBuildPlugin: BuildToolPlugin {
-    func createBuildCommands(context: PluginContext, target: Target) async throws -> [Command] {
-        guard let target = target as? SwiftSourceModuleTarget else { return [] }
-        
-        return try target.sourceFiles(withSuffix: ".gyb")
-        .map { ($0.path, context.pluginWorkDirectory.appending($0.path.withExtension("swift").lastComponent)) }
-        .map { sourcePath, destPath in
-            .buildCommand(
-                displayName: "Generating \(destPath.lastComponent) from \(sourcePath.lastComponent)",
-                executable: try context.tool(named: "gyb-swift").path,
-                arguments: target.compilationConditions.flatMap { ["-D", "\($0)=1"] } + [
-                    "--line-directive", #"#sourceLocation(file: "%(file)s", line: %(line)d)"#,
-                    "-o", destPath,
-                    sourcePath,
-                ],
-                inputFiles: [sourcePath],
-                outputFiles: [destPath]
-            )
-        }
-    }
-}
+  func createBuildCommands(context: PluginContext, target: Target) async throws -> [Command] {
+    guard let target = target as? SwiftSourceModuleTarget else { return [] }
 
-extension PackagePlugin.Path {
-    /// Return a new ``PackagePlugin/Path`` formed by replacing the existing extension (if any)
-    /// with the one provided.
-    ///
-    /// If, after removing the existing extension, the path already has the new extension, no
-    /// further changes are made. This prevents generating names with duplicated extensions.
-    ///
-    /// - Parameters:
-    ///   - newExtension: The new extension for the path.
-    /// - Returns: The resulting path.
-    ///
-    /// Example:
-    ///
-    ///     "/foo.pkg.tar.gz".settingExtension(to: "bar")    // "/foo.pkg.tar.bar"
-    ///     "/foo.pkg.tar.gz".settingExtension(to: "tar")    // "/foo.pkg.tar"
-    ///     "/foo.pkg.tar.gz".settingExtension(to: "gz")     // "/foo.pkg.tar.gz"
-    ///     "/foo.pkg.tar.gz".settingExtension(to: "tar.gz") // "/foo.pkg.tar.gz"
-    ///     "/foo.pkg.tar.gz".settingExtension(to: "tar.xz") // "/foo.pkg.tar.tar.xz"
-    ///
-    func withExtension(_ newExtension: String) -> Self {
-        self.removingLastComponent()
-            .appending(self.stem + (self.stem.hasSuffix(".\(newExtension)") ? "" : ".\(newExtension)"))
+    return try target.sourceFiles(withSuffix: ".gyb").lazy.map(\.path).map { gybFile in
+      let outputBaseName = gybFile.lastComponent.dropLast(4)
+      let dotPositionOrEnd = outputBaseName.lastIndex(of: ".") ?? outputBaseName.endIndex
+      let lineDirectiveFormat = lineDirectiveForOutputExtension[outputBaseName[dotPositionOrEnd...]] ?? ""
+      let outputFile = context.pluginWorkDirectory.appending(String(outputBaseName))
+
+      return .buildCommand(
+        displayName: "Generating \(outputBaseName) from \(gybFile.lastComponent)",
+        executable: try context.tool(named: "gyb-swift").path,
+        arguments: target.compilationConditions.flatMap { ["-D", "\($0)=1"] } + [
+          "--line-directive", lineDirectiveFormat,
+          "-o", outputFile,
+          gybFile,
+        ],
+        inputFiles: [gybFile],
+        outputFiles: [outputFile])
     }
+  }
 }
